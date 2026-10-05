@@ -546,6 +546,8 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	var enableDisconnectDrainTimeout func()
+	enableDisconnectDrainTimeout = func() {}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -619,6 +621,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 				eventType := gjson.GetBytes(restored, "type").String()
 				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
 					clientDisconnected = true
+					enableDisconnectDrainTimeout()
 					logger.L().Info("forward_as_responses stream: client disconnected",
 						zap.String("request_id", requestID),
 					)
@@ -655,6 +658,11 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	}
 	pump := newAnthropicNativeLinePump(scanner, streamInterval)
 	defer pump.stop()
+	if streamInterval <= 0 {
+		enableDisconnectDrainTimeout = func() {
+			pump.enableInterval(defaultAnthropicNativeDisconnectDrainTimeout)
+		}
+	}
 	onIdle := func() (*ForwardResult, error) {
 		_ = resp.Body.Close()
 		logger.L().Warn("forward_as_responses stream: data interval timeout",

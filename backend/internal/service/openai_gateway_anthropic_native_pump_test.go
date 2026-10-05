@@ -130,6 +130,24 @@ func TestAnthropicNativeLinePump_DataResetsTimer(t *testing.T) {
 	}
 }
 
+func TestAnthropicNativeLinePump_EnableIntervalAfterDisconnect(t *testing.T) {
+	pr, _ := io.Pipe()
+	scanner := bufio.NewScanner(pr)
+	pump := newAnthropicNativeLinePump(scanner, 0)
+	defer pump.stop()
+	defer func() { _ = pr.Close() }()
+
+	pump.enableInterval(50 * time.Millisecond)
+	start := time.Now()
+	_, err := pump.next()
+	if err == nil || !strings.Contains(err.Error(), "stream data interval timeout") {
+		t.Fatalf("expected fallback interval timeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("fallback timeout not respected: %v", elapsed)
+	}
+}
+
 func TestCCStreamingFromNativeAnthropic_HangTimesOut(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newNativeAnthropicHangTestService(1)

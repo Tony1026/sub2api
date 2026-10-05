@@ -382,6 +382,8 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	var enableDisconnectDrainTimeout func()
+	enableDisconnectDrainTimeout = func() {}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -418,6 +420,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
 			clientDisconnected = true
+			enableDisconnectDrainTimeout()
 			logger.L().Info("forward_as_cc stream: client disconnected, continuing to drain upstream for billing",
 				zap.String("request_id", requestID),
 			)
@@ -480,6 +483,11 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	}
 	pump := newAnthropicNativeLinePump(scanner, streamInterval)
 	defer pump.stop()
+	if streamInterval <= 0 {
+		enableDisconnectDrainTimeout = func() {
+			pump.enableInterval(defaultAnthropicNativeDisconnectDrainTimeout)
+		}
+	}
 	onIdle := func() (*ForwardResult, error) {
 		_ = resp.Body.Close()
 		logger.L().Warn("forward_as_cc stream: data interval timeout",
