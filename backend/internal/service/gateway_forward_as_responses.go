@@ -556,15 +556,16 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:       requestID,
-			UpstreamHeaders: resp.Header,
-			Usage:           usage,
-			Model:           originalModel,
-			UpstreamModel:   mappedModel,
-			ReasoningEffort: reasoningEffort,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:        requestID,
+			UpstreamHeaders:  resp.Header,
+			Usage:            usage,
+			Model:            originalModel,
+			UpstreamModel:    mappedModel,
+			ReasoningEffort:  reasoningEffort,
+			Stream:           true,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnected,
 		}
 	}
 
@@ -648,19 +649,55 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		return resultWithUsage(), nil
 	}
 
+	streamInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	pump := newAnthropicNativeLinePump(scanner, streamInterval)
+	defer pump.stop()
+	onIdle := func() (*ForwardResult, error) {
+		_ = resp.Body.Close()
+		logger.L().Warn("forward_as_responses stream: data interval timeout",
+			zap.String("request_id", requestID),
+			zap.Duration("interval", streamInterval),
+		)
+		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
+	}
+
 	// Read Anthropic SSE events
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, readErr := pump.next()
+		if readErr != nil {
+			if errors.Is(readErr, errAnthropicNativeStreamIdle) {
+				return onIdle()
+			}
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, context.Canceled) && !errors.Is(readErr, context.DeadlineExceeded) {
+				logger.L().Warn("forward_as_responses stream: read error",
+					zap.Error(readErr),
+					zap.String("request_id", requestID),
+				)
+			}
+			break
+		}
 		eventType, ok := parseAnthropicSSEField(line, "event")
 		if !ok {
 			continue
 		}
 
 		// Read data line
-		if !scanner.Scan() {
+		dataLine, readErr := pump.next()
+		if readErr != nil {
+			if errors.Is(readErr, errAnthropicNativeStreamIdle) {
+				return onIdle()
+			}
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, context.Canceled) && !errors.Is(readErr, context.DeadlineExceeded) {
+				logger.L().Warn("forward_as_responses stream: read error",
+					zap.Error(readErr),
+					zap.String("request_id", requestID),
+				)
+			}
 			break
 		}
-		dataLine := scanner.Text()
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
 			continue
@@ -677,15 +714,6 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		}
 
 		processEvent(&event)
-	}
-
-	if err := scanner.Err(); err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			logger.L().Warn("forward_as_responses stream: read error",
-				zap.Error(err),
-				zap.String("request_id", requestID),
-			)
-		}
 	}
 
 	return finalizeStream()

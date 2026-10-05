@@ -343,6 +343,37 @@ func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsUpstreamUsage(t 
 	require.NotNil(t, result)
 	require.Equal(t, 12, result.Usage.InputTokens)
 	require.Equal(t, 7, result.Usage.OutputTokens)
+	require.True(t, result.ClientDisconnect)
+}
+
+func TestHandleResponsesStreamingResponse_ClientDisconnectDrainHasIdleTimeout(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Writer = &failWriteResponseWriter{ResponseWriter: c.Writer}
+	respBody, upstreamWriter := io.Pipe()
+	resp := &http.Response{Body: respBody, Header: http.Header{"x-request-id": []string{"rid_responses_disconnect_timeout"}}}
+	go func() {
+		_, _ = upstreamWriter.Write([]byte(strings.Join([]string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_timeout","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4.5","usage":{"input_tokens":12}}}`,
+			``,
+		}, "\n")))
+	}()
+
+	svc := &GatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{StreamDataIntervalTimeout: 1}}}
+	start := time.Now()
+	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, start, apicompat.ResponsesClientToolMapping{})
+	_ = upstreamWriter.Close()
+	_ = respBody.Close()
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stream data interval timeout")
+	require.NotNil(t, result)
+	require.True(t, result.ClientDisconnect)
+	require.Less(t, time.Since(start), 5*time.Second)
 }
 
 func TestHandleResponsesStreamingResponse_NormalizesTerminalUsage(t *testing.T) {
