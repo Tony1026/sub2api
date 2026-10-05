@@ -23,6 +23,12 @@ import (
 // errAnthropicNativeStreamIdle 表示上游流读间隔超时（见上方文件注释）。
 var errAnthropicNativeStreamIdle = errors.New("stream data interval timeout")
 
+// A disconnected client still needs a bounded drain even when the operator
+// disabled the normal stream interval timeout. Keep the fallback aligned with
+// the documented default so slow thinking streams have time to finish while a
+// stalled upstream cannot pin the request forever.
+const defaultAnthropicNativeDisconnectDrainTimeout = 180 * time.Second
+
 // anthropicNativeLineEvent 是行泵交付的单次读取结果：line 为一行 SSE 文本，
 // err 为 scanner 读错误（流自然结束时 next 返回 io.EOF，不经过本字段）。
 type anthropicNativeLineEvent struct {
@@ -100,6 +106,17 @@ func (p *anthropicNativeLinePump) resetTimer() {
 		}
 	}
 	p.timer.Reset(p.interval)
+}
+
+// enableInterval turns on an idle timeout after a downstream disconnect. It
+// is called by the handler goroutine, which is also the only goroutine that
+// reads or resets p.timer.
+func (p *anthropicNativeLinePump) enableInterval(interval time.Duration) {
+	if p.timer != nil || interval <= 0 {
+		return
+	}
+	p.interval = interval
+	p.timer = time.NewTimer(interval)
 }
 
 // stop 终止泵 goroutine。注意：goroutine 若正阻塞在 scanner.Read 上，需由
