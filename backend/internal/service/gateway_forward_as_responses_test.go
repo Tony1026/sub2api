@@ -311,7 +311,6 @@ func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *tes
 }
 
 func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsUpstreamUsage(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -347,7 +346,6 @@ func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsUpstreamUsage(t 
 }
 
 func TestHandleResponsesStreamingResponse_ClientDisconnectDrainHasIdleTimeout(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()

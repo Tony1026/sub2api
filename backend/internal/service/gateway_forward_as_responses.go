@@ -663,18 +663,27 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			pump.enableInterval(defaultAnthropicNativeDisconnectDrainTimeout)
 		}
 	}
+	requestContext := context.Background()
+	if c != nil && c.Request != nil {
+		requestContext = c.Request.Context()
+	}
 	onIdle := func() (*ForwardResult, error) {
+		if requestContext.Err() != nil {
+			clientDisconnected = true
+		}
 		_ = resp.Body.Close()
 		logger.L().Warn("forward_as_responses stream: data interval timeout",
 			zap.String("request_id", requestID),
-			zap.Duration("interval", streamInterval),
+			zap.Duration("interval", pump.interval),
 		)
-		return resultWithUsage(), fmt.Errorf("stream data interval timeout")
+		return resultWithUsage(), errAnthropicNativeStreamIdle
 	}
+
+	markClientDisconnected := func() { clientDisconnected = true }
 
 	// Read Anthropic SSE events
 	for {
-		line, readErr := pump.next()
+		line, readErr := pump.nextWithContext(requestContext, markClientDisconnected)
 		if readErr != nil {
 			if errors.Is(readErr, errAnthropicNativeStreamIdle) {
 				return onIdle()
@@ -693,7 +702,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		}
 
 		// Read data line
-		dataLine, readErr := pump.next()
+		dataLine, readErr := pump.nextWithContext(requestContext, markClientDisconnected)
 		if readErr != nil {
 			if errors.Is(readErr, errAnthropicNativeStreamIdle) {
 				return onIdle()
