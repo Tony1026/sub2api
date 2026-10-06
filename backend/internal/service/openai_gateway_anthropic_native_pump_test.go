@@ -6,6 +6,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -145,6 +146,55 @@ func TestAnthropicNativeLinePump_EnableIntervalAfterDisconnect(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("fallback timeout not respected: %v", elapsed)
+	}
+}
+
+func TestAnthropicNativeLinePump_ContextCancellationEnablesFallback(t *testing.T) {
+	for _, configured := range []time.Duration{0, time.Second} {
+		t.Run(configured.String(), func(t *testing.T) {
+			pr, pw := io.Pipe()
+			defer pr.Close()
+			defer pw.Close()
+			pump := newAnthropicNativeLinePump(bufio.NewScanner(pr), configured)
+			defer pump.stop()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			observed := make(chan time.Duration, 1)
+			result := make(chan anthropicNativeLineEvent, 1)
+			go func() {
+				line, err := pump.nextWithContext(ctx, func() { observed <- pump.interval })
+				result <- anthropicNativeLineEvent{line: line, err: err}
+			}()
+			cancel()
+			want := configured
+			if want == 0 {
+				want = defaultAnthropicNativeDisconnectDrainTimeout
+			}
+			select {
+			case got := <-observed:
+				if got != want {
+					t.Fatalf("expected drain interval %v, got %v", want, got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("blocked upstream read did not observe client cancellation")
+			}
+			// The read must remain on the same pending data line after cancellation.
+			if _, err := io.WriteString(pw, "data: usage\n"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-result:
+				if got.err != nil || got.line != "data: usage" {
+					t.Fatalf("expected pending data line, got %q err=%v", got.line, got.err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("drain did not return upstream data")
+			}
+			_ = pw.Close()
+			if _, err := pump.nextWithContext(ctx, func() { t.Error("disconnect reported twice") }); err != io.EOF {
+				t.Fatalf("expected EOF, got %v", err)
+			}
+		})
 	}
 }
 

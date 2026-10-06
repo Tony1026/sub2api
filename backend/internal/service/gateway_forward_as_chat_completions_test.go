@@ -250,7 +250,6 @@ func TestHandleCCStreamingFromAnthropic_PreservesMessageStartCacheUsageAndReason
 }
 
 func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainsUpstreamUsage(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -286,7 +285,6 @@ func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainsUpstreamUsage(t *t
 }
 
 func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainHasIdleTimeout(t *testing.T) {
-	t.Parallel()
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()

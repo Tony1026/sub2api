@@ -15,6 +15,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -43,6 +44,9 @@ type anthropicNativeLinePump struct {
 	done     chan struct{}
 	timer    *time.Timer
 	interval time.Duration
+	// clientDisconnectSeen is only accessed by the handler goroutine through
+	// nextWithContext; the scanner goroutine never touches it.
+	clientDisconnectSeen bool
 }
 
 // newAnthropicNativeLinePump 启动泵 goroutine；调用方 defer pump.stop()。
@@ -91,6 +95,49 @@ func (p *anthropicNativeLinePump) next() (string, error) {
 		return ev.line, ev.err
 	case <-timeoutCh:
 		return "", errAnthropicNativeStreamIdle
+	}
+}
+
+// nextWithContext is the context-aware variant used by compatibility handlers.
+// A canceled client context marks the drain as disconnected and enables the
+// disconnect-only fallback interval before continuing to consume upstream
+// events. This keeps a silent detached upstream from blocking forever when the
+// normal stream interval timeout is disabled.
+func (p *anthropicNativeLinePump) nextWithContext(ctx context.Context, onDisconnect func()) (string, error) {
+	if ctx == nil || p.clientDisconnectSeen {
+		return p.next()
+	}
+	markDisconnected := func() {
+		p.clientDisconnectSeen = true
+		p.enableInterval(defaultAnthropicNativeDisconnectDrainTimeout)
+		if onDisconnect != nil {
+			onDisconnect()
+		}
+	}
+	clientDone := ctx.Done()
+	if ctx.Err() != nil {
+		markDisconnected()
+		return p.next()
+	}
+
+	var timeoutCh <-chan time.Time
+	if p.timer != nil {
+		timeoutCh = p.timer.C
+	}
+	select {
+	case ev, ok := <-p.events:
+		if !ok {
+			return "", io.EOF
+		}
+		p.resetTimer()
+		return ev.line, ev.err
+	case <-timeoutCh:
+		return "", errAnthropicNativeStreamIdle
+	case <-clientDone:
+		markDisconnected()
+		// Continue the same line read, including when cancellation occurs between
+		// an SSE event line and its data line, so final usage is never skipped.
+		return p.next()
 	}
 }
 
