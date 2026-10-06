@@ -126,12 +126,18 @@ func (p *anthropicNativeLinePump) nextWithContext(ctx context.Context, onDisconn
 	}
 	select {
 	case ev, ok := <-p.events:
+		if ctx.Err() != nil {
+			markDisconnected()
+		}
 		if !ok {
 			return "", io.EOF
 		}
 		p.resetTimer()
 		return ev.line, ev.err
 	case <-timeoutCh:
+		if ctx.Err() != nil {
+			markDisconnected()
+		}
 		return "", errAnthropicNativeStreamIdle
 	case <-clientDone:
 		markDisconnected()

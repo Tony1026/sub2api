@@ -198,6 +198,37 @@ func TestAnthropicNativeLinePump_ContextCancellationEnablesFallback(t *testing.T
 	}
 }
 
+// Cancel just after the first cancellation snapshot, making both EOF and the
+// client cancellation channel ready for the ensuing select.
+type cancelAfterStreamErrCheckContext struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterStreamErrCheckContext) Err() error {
+	err := c.Context.Err()
+	c.cancel()
+	return err
+}
+
+func TestAnthropicNativeLinePump_CancellationAndEOFKeepDisconnectState(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		pump := newAnthropicNativeLinePump(bufio.NewScanner(strings.NewReader("")), 0)
+		// With an empty body there are no lines to consume; wait for scanner EOF
+		// so its closed channel is ready together with the cancellation signal.
+		for range pump.events {
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		disconnected := false
+		_, err := pump.nextWithContext(&cancelAfterStreamErrCheckContext{Context: ctx, cancel: cancel}, func() { disconnected = true })
+		pump.stop()
+		cancel()
+		if err != io.EOF || !disconnected {
+			t.Fatalf("iteration %d: EOF lost disconnect state: err=%v disconnected=%v", i, err, disconnected)
+		}
+	}
+}
+
 func TestCCStreamingFromNativeAnthropic_HangTimesOut(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := newNativeAnthropicHangTestService(1)
