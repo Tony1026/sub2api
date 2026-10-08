@@ -153,8 +153,8 @@ func TestAnthropicNativeLinePump_ContextCancellationEnablesFallback(t *testing.T
 	for _, configured := range []time.Duration{0, time.Second} {
 		t.Run(configured.String(), func(t *testing.T) {
 			pr, pw := io.Pipe()
-			defer pr.Close()
-			defer pw.Close()
+			defer func() { _ = pr.Close() }()
+			defer func() { _ = pw.Close() }()
 			pump := newAnthropicNativeLinePump(bufio.NewScanner(pr), configured)
 			defer pump.stop()
 			ctx, cancel := context.WithCancel(context.Background())
