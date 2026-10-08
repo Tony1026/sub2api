@@ -433,13 +433,22 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		if event == nil {
 			return
 		}
-		// Drop Anthropic keepalive pings before OpenAI conversion:
-		// leaking `event: ping` frames crashes OpenAI-stream clients.
-		// Error events must still forward — they carry upstream failures.
 		if event.Type == "ping" {
+			if clientDisconnected {
+				return
+			}
+			if _, err := fmt.Fprint(c.Writer, ": ping\n\n"); err != nil {
+				clientDisconnected = true
+				enableDisconnectDrainTimeout()
+				logger.L().Info("forward_as_cc stream: client disconnected during keepalive, continuing to drain upstream for billing",
+					zap.String("request_id", requestID),
+				)
+				return
+			}
+			c.Writer.Flush()
 			return
 		}
-		if firstChunk {
+		if firstChunk && !clientDisconnected {
 			firstChunk = false
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
